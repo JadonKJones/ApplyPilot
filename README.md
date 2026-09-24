@@ -65,7 +65,7 @@ Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cov
 | **3. Score** | AI rates every job 1-10 based on your resume and preferences. Only high-fit jobs proceed |
 | **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant experience, adds keywords. Never fabricates |
 | **5. Cover Letter** | AI generates a targeted cover letter per job |
-| **6. Auto-Apply** | Claude Code navigates application forms, fills fields, uploads documents, answers questions, and submits |
+| **6. Auto-Apply** | Fills and submits application forms — natively (zero LLM cost) on known ATS platforms, or via Claude Code for everything else |
 
 Each stage is independent. Run them all or pick what you need.
 
@@ -101,6 +101,8 @@ Each stage is independent. Run them all or pick what you need.
 | Component | What It Does |
 |-----------|-------------|
 | CapSolver API key | Solves CAPTCHAs during auto-apply (hCaptcha, reCAPTCHA, Turnstile, FunCaptcha). Without it, CAPTCHA-blocked applications just fail gracefully |
+| Discord bot | Native handlers DM you screening questions instead of falling back to Claude for them — see [Screening Questions](#screening-questions) |
+| Google Cloud OAuth client | Powers `applypilot gmail sync` (rejection/ghosting detection for the tracker) — see [Application Tracker](#application-tracker) |
 
 > **Note:** python-jobspy is installed separately with `--no-deps` because it pins an exact numpy version in its metadata that conflicts with pip's resolver. It works fine with modern numpy at runtime.
 
@@ -117,7 +119,7 @@ Your personal data in one structured file: contact info, work authorization, com
 Job search queries, target titles, locations, boards. Run multiple searches with different parameters.
 
 ### `.env`
-API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` (optional).
+API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` (optional), plus `DISCORD_BOT_TOKEN`/`DISCORD_USER_ID` and `GMAIL_CLIENT_ID`/`GMAIL_CLIENT_SECRET`/`GMAIL_REFRESH_TOKEN` (both optional — see [Screening Questions](#screening-questions) and [Application Tracker](#application-tracker) below). See [.env.example](.env.example) for the full list.
 
 ### Package configs (shipped with ApplyPilot)
 - `config/employers.yaml` - Workday employer registry (48 preconfigured)
@@ -144,7 +146,7 @@ Generates a custom resume per job: reorders experience, emphasizes relevant skil
 Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.
 
 ### Auto-Apply
-Claude Code launches a Chrome instance, navigates to each application page, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. A live dashboard shows progress in real-time.
+For each job, ApplyPilot first checks whether it has a **native handler** for that site — a hand-written or self-generated Playwright script that fills and submits the form directly, no LLM involved. If none matches (or the posting doesn't fit what the handler expects), it falls back to Claude Code: launches a Chrome instance, navigates to the application page, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. A live dashboard shows progress in real-time either way.
 
 The Playwright MCP server is configured automatically at runtime per worker. No manual MCP setup needed.
 
@@ -154,6 +156,67 @@ applypilot apply --mark-applied URL    # manually mark a job as applied
 applypilot apply --mark-failed URL     # manually mark a job as failed
 applypilot apply --reset-failed        # reset all failed jobs for retry
 applypilot apply --gen --url URL       # generate prompt file for manual debugging
+```
+
+---
+
+## Native Apply Handlers
+
+Most auto-apply tools spend an LLM call reasoning through every single form, on every single application, forever. ApplyPilot instead keeps a small library of **native handlers** — plain Playwright code, one per ATS platform — that fill and submit a form directly for zero LLM cost. It ships with one for [Gem](https://gem.com) (`jobs.gem.com`) out of the box.
+
+### It writes its own handlers
+
+You don't have to ask. ApplyPilot tracks which domains keep falling through to the Claude agent, and once a domain has needed it 5+ times, it spawns Claude Code in the background — the *exact same* `claude` CLI call used for every LLM-driven application, so it works identically on a Claude Pro/Max subscription; no separate API key required — to inspect a real posting on that domain and write a new handler module. Generated handlers follow the same defensive contract as the hand-written ones: whenever anything is uncertain (unfamiliar layout, an unsupported field type, can't confirm the submission went through), they bail out to the LLM agent rather than guess. Worst case, a bad generated handler is no worse than having no handler at all.
+
+```bash
+applypilot sites status              # active handlers + which domains are close to auto-generating one
+applypilot sites regenerate DOMAIN   # force (re)generation right now, e.g. after one is marked 'failed'
+```
+
+### Screening Questions
+
+Native handlers don't call Claude to improvise answers to screening/EEO/custom questions — they resolve them through a cached-answer system instead:
+
+1. Check the answer cache (exact match, or an alias you've defined).
+2. If it's genuinely new, and a Discord bot is configured, DM you the question and wait for your reply.
+3. Cache the answer so the same (or an aliased) question is never asked twice.
+
+```bash
+applypilot questions list                          # cached answers + aliases
+applypilot questions set "Years of Python exp?" "5+"   # seed an answer up front, no Discord needed
+applypilot questions alias "Describe your Python background" "Years of Python exp?"  # reuse one answer for many phrasings
+applypilot questions rm "..."                       # delete a cached question
+applypilot questions rm-alias "..."                  # remove an alias
+```
+
+To enable the Discord fallback: create a bot at [discord.com/developers/applications](https://discord.com/developers/applications), invite it to any one server you're also in (a bot can only DM someone it shares a server with), enable **Message Content Intent**, then set `DISCORD_BOT_TOKEN` and `DISCORD_USER_ID` in `.env`. Without it, an unanswered new question just falls back to the Claude agent for that one job.
+
+---
+
+## Application Tracker
+
+`applypilot tracker` maintains an Excel workbook (`~/.applypilot/tracker.xlsx`) of every job you've actually applied to — Position, Company, Role, Location, Date Applied, résumé/cover-letter filenames used, salary + an anticipated-takeaway formula, a hyperlinked Link, and a Status column with a dropdown (draft → interview rounds → rejection/ghosted/offer). It's regenerated automatically after every successful application; run it by hand with:
+
+```bash
+applypilot tracker            # refresh ~/.applypilot/tracker.xlsx
+applypilot tracker --open     # refresh and open it
+```
+
+It's an upsert, not an overwrite — matched by the Link column, so re-running it never touches Notes, Connections?, Latest word, contact 1, or SHADE once you've filled them in by hand. This is its own file, not something that edits a tracker you already keep.
+
+### Gmail response tracking (optional)
+
+Set up `applypilot gmail auth` once (needs your own OAuth client from [console.cloud.google.com](https://console.cloud.google.com/apis/credentials) — Desktop app type, Gmail API enabled, read-only scope only) and `applypilot gmail sync` will scan your inbox for each applied job and fill in **Last Contact** and a first guess at **Status**:
+
+- a rejection email → `rejection (interview)` or `rejection (application)`, depending on whether an interview happened first
+- 30+ days of silence after an interview → `ghosted (interview)`
+- 30+ days of silence with no contact at all → `ignored (application)`
+
+Status is only ever a *starting* guess: the moment you type a different value into that cell yourself, it's yours — future syncs never overwrite a status you've set by hand.
+
+```bash
+applypilot gmail auth     # one-time OAuth setup (opens a browser)
+applypilot gmail sync     # check for responses, update the tracker
 ```
 
 ---
@@ -178,6 +241,14 @@ applypilot apply --headless             # Headless browser mode
 applypilot apply --url URL              # Apply to a specific job
 applypilot status                       # Pipeline statistics
 applypilot dashboard                    # Open HTML results dashboard
+applypilot tracker [--open]             # Export/open the Excel application tracker
+applypilot sites status                 # Native handler status + domains close to auto-generation
+applypilot sites regenerate DOMAIN      # Force (re)generate a native handler now
+applypilot questions list               # Cached screening-question answers + aliases
+applypilot questions set Q A            # Cache an answer without waiting for Discord
+applypilot questions alias ALIAS Q      # Map a new phrasing onto an existing answer
+applypilot gmail auth                   # One-time Gmail OAuth setup
+applypilot gmail sync                   # Detect rejections/ghosting, update the tracker
 ```
 
 ---

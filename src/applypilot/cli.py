@@ -22,6 +22,23 @@ app = typer.Typer(
     help="AI-powered end-to-end job application pipeline.",
     no_args_is_help=True,
 )
+questions_app = typer.Typer(
+    help="Manage cached screening-question answers and aliases (used by native site handlers).",
+    no_args_is_help=True,
+)
+app.add_typer(questions_app, name="questions")
+
+sites_app = typer.Typer(
+    help="Native (LLM-free) apply handlers -- status, and self-generation of new ones.",
+    no_args_is_help=True,
+)
+app.add_typer(sites_app, name="sites")
+
+gmail_app = typer.Typer(
+    help="Gmail-based response tracking -- detects rejections/ghosting for the Excel tracker.",
+    no_args_is_help=True,
+)
+app.add_typer(gmail_app, name="gmail")
 console = Console()
 log = logging.getLogger(__name__)
 
@@ -323,6 +340,38 @@ def status() -> None:
 
 
 @app.command()
+def tracker(
+    open_file: bool = typer.Option(False, "--open", "-o", help="Open the tracker after exporting."),
+) -> None:
+    """Export the Excel application tracker (~/.applypilot/tracker.xlsx).
+
+    Runs automatically after every successful application -- this is for
+    forcing a refresh (e.g. after editing the DB by hand) or just opening it.
+    """
+    _bootstrap()
+
+    from applypilot import tracker as tracker_mod
+
+    path = tracker_mod.export()
+    console.print(f"[green]Exported:[/green] {path}")
+
+    if open_file:
+        import platform
+        import subprocess
+        system = platform.system()
+        try:
+            if system == "Darwin":
+                subprocess.run(["open", str(path)])
+            elif system == "Windows":
+                import os
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", str(path)])
+        except Exception as e:
+            console.print(f"[yellow]Couldn't auto-open:[/yellow] {e}")
+
+
+@app.command()
 def dashboard() -> None:
     """Generate and open the HTML dashboard in your browser."""
     _bootstrap()
@@ -428,6 +477,24 @@ def doctor() -> None:
         results.append(("CapSolver API key", "[dim]optional[/dim]",
                         "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving"))
 
+    # Discord bot (optional -- lets native site handlers ask screening
+    # questions without falling back to Claude)
+    from applypilot import discord_bot
+    if discord_bot.is_configured():
+        results.append(("Discord bot", ok_mark, "Screening questions will DM you"))
+    else:
+        results.append(("Discord bot", "[dim]optional[/dim]",
+                        "Set DISCORD_BOT_TOKEN + DISCORD_USER_ID in .env — "
+                        "see README for setup"))
+
+    # Gmail response tracking (optional -- feeds the tracker's Status column)
+    from applypilot import gmail_status
+    if gmail_status.is_configured():
+        results.append(("Gmail tracking", ok_mark, "Run 'applypilot gmail sync' to check responses"))
+    else:
+        results.append(("Gmail tracking", "[dim]optional[/dim]",
+                        "Run 'applypilot gmail auth' to detect rejections/ghosting"))
+
     # --- Render results ---
     console.print()
     console.print("[bold]ApplyPilot Doctor[/bold]\n")
@@ -451,6 +518,212 @@ def doctor() -> None:
         console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
 
     console.print()
+
+
+@questions_app.command("list")
+def questions_list() -> None:
+    """List all cached screening-question answers and aliases."""
+    _bootstrap()
+    from applypilot.screening import list_answers, list_aliases
+
+    answers = list_answers()
+    if not answers:
+        console.print("[dim]No cached answers yet. Use 'applypilot questions set' to add one,[/dim]")
+        console.print("[dim]or just let a native handler ask you over Discord.[/dim]")
+    else:
+        table = Table(title="Cached Answers", show_header=True, header_style="bold cyan")
+        table.add_column("Question")
+        table.add_column("Answer")
+        table.add_column("Source", style="dim")
+        for a in answers:
+            table.add_row(a["question_raw"], a["answer"] or "[dim]<no answer yet>[/dim]", a["source"] or "")
+        console.print(table)
+
+    aliases = list_aliases()
+    if aliases:
+        atable = Table(title="Aliases", show_header=True, header_style="bold magenta")
+        atable.add_column("Alias")
+        atable.add_column("→ Canonical question")
+        for al in aliases:
+            atable.add_row(al["alias_raw"], al["canonical_raw"])
+        console.print(atable)
+
+
+@questions_app.command("set")
+def questions_set(
+    question: str = typer.Argument(..., help="The question text, as it appears on the form."),
+    answer: str = typer.Argument(..., help="The answer to cache for it."),
+) -> None:
+    """Cache an answer for a question up front, without waiting for a Discord prompt."""
+    _bootstrap()
+    from applypilot.screening import save_answer
+
+    save_answer(question, answer, source="manual")
+    console.print(f'[green]Cached:[/green] "{question}" -> "{answer}"')
+
+
+@questions_app.command("alias")
+def questions_alias(
+    alias: str = typer.Argument(..., help="A new phrasing you expect to see on some form."),
+    canonical: str = typer.Argument(..., help="The question you've already answered (or will answer)."),
+) -> None:
+    """Map ALIAS onto whatever answer CANONICAL resolves to.
+
+    Example: a form asks "Describe your Python background" and you've
+    already answered "What is your experience with Python?" elsewhere --
+    alias the new phrasing so it reuses that answer instead of asking again.
+    """
+    _bootstrap()
+    from applypilot.screening import add_alias, get_answer
+
+    add_alias(alias, canonical)
+    if get_answer(canonical) is None:
+        console.print(
+            f'[yellow]Alias saved, but "{canonical}" has no answer yet.[/yellow] Set one with:\n'
+            f'  applypilot questions set "{canonical}" "..."'
+        )
+    else:
+        console.print(f'[green]Aliased:[/green] "{alias}" -> "{canonical}"')
+
+
+@questions_app.command("rm")
+def questions_rm(question: str = typer.Argument(..., help="Question to delete.")) -> None:
+    """Delete a cached question (and any aliases pointing to it)."""
+    _bootstrap()
+    from applypilot.screening import delete_answer
+
+    if delete_answer(question):
+        console.print(f'[green]Deleted:[/green] "{question}"')
+    else:
+        console.print(f'[yellow]No cached question matched:[/yellow] "{question}"')
+
+
+@questions_app.command("rm-alias")
+def questions_rm_alias(alias: str = typer.Argument(..., help="Alias to remove.")) -> None:
+    """Remove an alias mapping (the canonical question/answer is unaffected)."""
+    _bootstrap()
+    from applypilot.screening import remove_alias
+
+    if remove_alias(alias):
+        console.print(f'[green]Removed alias:[/green] "{alias}"')
+    else:
+        console.print(f'[yellow]No alias matched:[/yellow] "{alias}"')
+
+
+@sites_app.command("status")
+def sites_status() -> None:
+    """Show active native handlers and which domains are approaching auto-generation."""
+    _bootstrap()
+    from applypilot.apply import sites as site_handlers
+    from applypilot.apply.sitegen import DEFAULT_THRESHOLD
+    from applypilot.database import list_site_stats
+
+    handlers = [h.__name__.rsplit(".", 1)[-1] for h in site_handlers._HANDLERS]
+    console.print(f"\n[bold]Active native handlers:[/bold] {', '.join(handlers) or '[dim]none[/dim]'}\n")
+
+    stats = list_site_stats()
+    if not stats:
+        console.print("[dim]No domains tracked yet -- this fills in as jobs go through the Claude agent.[/dim]\n")
+        return
+
+    table = Table(title="Domains seen by the Claude apply agent", show_header=True, header_style="bold cyan")
+    table.add_column("Domain")
+    table.add_column("LLM applies", justify="right")
+    table.add_column("Handler status")
+    table.add_column("Module", style="dim")
+    for s in stats:
+        status = s["handler_status"] or "none"
+        if status == "generated":
+            status_disp = "[green]generated[/green]"
+        elif status == "generating":
+            status_disp = "[yellow]generating…[/yellow]"
+        elif status == "failed":
+            status_disp = "[red]failed[/red]"
+        elif s["llm_apply_count"] >= DEFAULT_THRESHOLD:
+            status_disp = "[yellow]due[/yellow]"
+        else:
+            status_disp = f"[dim]none ({DEFAULT_THRESHOLD - s['llm_apply_count']} to go)[/dim]"
+        table.add_row(s["domain"], str(s["llm_apply_count"]), status_disp, s["handler_module"] or "")
+    console.print(table)
+    console.print()
+
+
+@sites_app.command("regenerate")
+def sites_regenerate(
+    domain: str = typer.Argument(..., help="Domain to (re)generate a handler for, e.g. boards.greenhouse.io"),
+    model: str = typer.Option("sonnet", "--model", "-m", help="Claude model to use for generation."),
+) -> None:
+    """Force (re)generation of a native handler for a domain right now (blocks until done).
+
+    Use this to retry a domain marked 'failed', or to jump the threshold for
+    a domain you already know is worth handling natively.
+    """
+    _bootstrap()
+    from applypilot import config as ap_config
+    from applypilot.database import get_connection
+    from applypilot.apply.sitegen import generate_handler
+
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT application_url, url FROM jobs WHERE (application_url LIKE ? OR url LIKE ?) LIMIT 1",
+        (f"%{domain}%", f"%{domain}%"),
+    ).fetchone()
+    if not row:
+        console.print(f"[red]No job in the database matches domain:[/red] {domain}")
+        raise typer.Exit(code=1)
+
+    sample_job = {"url": row["url"], "application_url": row["application_url"]}
+    console.print(f"[cyan]Generating a handler for {domain}...[/cyan] (this spawns Claude Code and can take a few minutes)")
+    ok = generate_handler(domain, sample_job, model=model)
+    if ok:
+        console.print(f"[green]Done.[/green] Run 'applypilot sites status' to see it.")
+    else:
+        console.print(f"[red]Generation failed.[/red] Check the logs in {ap_config.LOG_DIR}")
+
+
+@gmail_app.command("auth")
+def gmail_auth(
+    client_id: Optional[str] = typer.Option(None, "--client-id", envvar="GMAIL_CLIENT_ID"),
+    client_secret: Optional[str] = typer.Option(None, "--client-secret", envvar="GMAIL_CLIENT_SECRET"),
+) -> None:
+    """One-time Gmail OAuth setup (opens a browser for consent).
+
+    Create an OAuth client first at https://console.cloud.google.com/apis/credentials
+    (type "Desktop app", with the Gmail API enabled on that project), then pass its
+    id/secret here (or set GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET). Only read-only
+    Gmail access is requested.
+    """
+    _bootstrap()
+    if not client_id or not client_secret:
+        console.print("[red]Missing --client-id / --client-secret[/red] (or GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET).")
+        console.print("Create one at: https://console.cloud.google.com/apis/credentials")
+        raise typer.Exit(code=1)
+
+    from applypilot.gmail_status import run_oauth_flow
+
+    try:
+        run_oauth_flow(client_id, client_secret)
+    except Exception as e:
+        console.print(f"[red]Auth failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print("[green]Gmail connected.[/green] Saved to ~/.applypilot/.env. Try 'applypilot gmail sync'.")
+
+
+@gmail_app.command("sync")
+def gmail_sync() -> None:
+    """Scan Gmail for responses to your applications and update the tracker's Status column."""
+    _bootstrap()
+    from applypilot import gmail_status, tracker as tracker_mod
+
+    if not gmail_status.is_configured():
+        console.print("[red]Gmail not configured.[/red] Run 'applypilot gmail auth' first.")
+        raise typer.Exit(code=1)
+
+    console.print("[cyan]Checking Gmail for responses...[/cyan]")
+    updated = gmail_status.sync()
+    path = tracker_mod.export()
+    console.print(f"[green]Updated {updated} job(s).[/green] Tracker refreshed: {path}")
 
 
 if __name__ == "__main__":

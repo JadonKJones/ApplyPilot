@@ -88,6 +88,36 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     conn = get_connection(path)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS screening_answers (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            question      TEXT NOT NULL UNIQUE,
+            question_raw  TEXT NOT NULL,
+            answer        TEXT,
+            source        TEXT,
+            created_at    TEXT,
+            updated_at    TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS screening_aliases (
+            alias         TEXT PRIMARY KEY,
+            alias_raw     TEXT NOT NULL,
+            answer_id     INTEGER NOT NULL REFERENCES screening_answers(id) ON DELETE CASCADE,
+            created_at    TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS site_stats (
+            domain          TEXT PRIMARY KEY,
+            llm_apply_count INTEGER DEFAULT 0,
+            first_seen      TEXT,
+            last_seen       TEXT,
+            handler_status  TEXT DEFAULT 'none',
+            handler_module  TEXT,
+            updated_at      TEXT
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             -- Discovery stage (smart_extract / job_search)
             url                   TEXT PRIMARY KEY,
@@ -129,7 +159,14 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             last_attempted_at     TEXT,
             apply_duration_ms     INTEGER,
             apply_task_id         TEXT,
-            verification_confidence TEXT
+            verification_confidence TEXT,
+
+            -- Gmail-based response tracking (see gmail_status.py)
+            gmail_status          TEXT,
+            gmail_status_at       TEXT,
+            gmail_last_contact_at TEXT,
+            status_last_written   TEXT,
+            last_contact_last_written TEXT
         )
     """)
     conn.commit()
@@ -180,6 +217,12 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_duration_ms": "INTEGER",
     "apply_task_id": "TEXT",
     "verification_confidence": "TEXT",
+    # Gmail-based response tracking (see gmail_status.py)
+    "gmail_status": "TEXT",
+    "gmail_status_at": "TEXT",
+    "gmail_last_contact_at": "TEXT",
+    "status_last_written": "TEXT",
+    "last_contact_last_written": "TEXT",
 }
 
 
@@ -422,3 +465,58 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         columns = rows[0].keys()
         return [dict(zip(columns, row)) for row in rows]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Site stats (tracks how often each ATS domain needed the Claude apply agent,
+# so a native handler can be generated once a domain comes up often enough)
+# ---------------------------------------------------------------------------
+
+def record_llm_apply(domain: str, conn: sqlite3.Connection | None = None) -> int:
+    """Bump the LLM-apply counter for a domain. Returns the new count."""
+    if conn is None:
+        conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute("""
+        INSERT INTO site_stats (domain, llm_apply_count, first_seen, last_seen, updated_at)
+        VALUES (?, 1, ?, ?, ?)
+        ON CONFLICT(domain) DO UPDATE SET
+            llm_apply_count = llm_apply_count + 1,
+            last_seen = excluded.last_seen,
+            updated_at = excluded.updated_at
+    """, (domain, now, now, now))
+    conn.commit()
+
+    return conn.execute(
+        "SELECT llm_apply_count FROM site_stats WHERE domain = ?", (domain,)
+    ).fetchone()[0]
+
+
+def get_site_stats(domain: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    if conn is None:
+        conn = get_connection()
+    row = conn.execute("SELECT * FROM site_stats WHERE domain = ?", (domain,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_handler_status(domain: str, status: str, handler_module: str | None = None,
+                       conn: sqlite3.Connection | None = None) -> None:
+    """status: 'none' | 'generating' | 'generated' | 'failed'"""
+    if conn is None:
+        conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE site_stats SET handler_status = ?, handler_module = ?, updated_at = ? WHERE domain = ?",
+        (status, handler_module, now, domain),
+    )
+    conn.commit()
+
+
+def list_site_stats(conn: sqlite3.Connection | None = None) -> list[dict]:
+    if conn is None:
+        conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM site_stats ORDER BY llm_apply_count DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]

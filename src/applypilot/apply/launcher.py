@@ -26,6 +26,7 @@ from rich.live import Live
 from applypilot import config
 from applypilot.database import get_connection
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import sites as site_handlers
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
@@ -291,18 +292,80 @@ def reset_failed() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Native (LLM-free) site handlers
+# ---------------------------------------------------------------------------
+
+def _try_native_apply(job: dict, port: int, worker_id: int,
+                      dry_run: bool) -> tuple[str, int] | None:
+    """Try a zero-token site handler before falling back to the Claude agent.
+
+    Returns (status, duration_ms) if a handler fully handled the job, or
+    None if there's no handler for this site (or it declined) -- caller
+    should fall through to the normal Claude-driven run_job flow.
+    """
+    url = job.get("application_url") or job["url"]
+    handler = site_handlers.find_handler(url)
+    if handler is None:
+        return None
+
+    from playwright.sync_api import sync_playwright
+
+    handler_name = handler.__name__.rsplit(".", 1)[-1]
+    start = time.time()
+    add_event(f"[W{worker_id}] Native apply ({handler_name}): {job['title'][:30]}")
+    update_state(worker_id, status="applying", job_title=job["title"],
+                 company=job.get("site", ""), score=job.get("fit_score", 0),
+                 start_time=start, actions=0, last_action=f"native apply ({handler_name})")
+
+    try:
+        profile = config.load_profile()
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://localhost:{port}")
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.pages[0] if context.pages else context.new_page()
+            result = handler.apply(page, job, profile, dry_run=dry_run)
+    except Exception:
+        logger.exception("Native handler '%s' crashed for %s, falling back to LLM",
+                         handler_name, url)
+        result = None
+
+    if result is None:
+        return None
+
+    duration_ms = int((time.time() - start) * 1000)
+    elapsed = int(time.time() - start)
+    add_event(f"[W{worker_id}] {result} (native, {elapsed}s): {job['title'][:30]}")
+    update_state(worker_id, status=result.split(":", 1)[0],
+                 last_action=f"{result} ({elapsed}s)")
+    return result, duration_ms
+
+
+# ---------------------------------------------------------------------------
 # Per-job execution
 # ---------------------------------------------------------------------------
 
 def run_job(job: dict, port: int, worker_id: int = 0,
             model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
-    """Spawn a Claude Code session for one job application.
+    """Apply to one job -- via a native site handler if one matches, else by
+    spawning a Claude Code session to drive the browser generically.
 
     Returns:
         Tuple of (status_string, duration_ms). Status is one of:
         'applied', 'expired', 'captcha', 'login_issue',
         'failed:reason', or 'skipped'.
     """
+    native = _try_native_apply(job, port, worker_id, dry_run)
+    if native is not None:
+        return native
+
+    # No native handler handled this one -- track the domain so a handler
+    # can be auto-generated once it comes up often enough (see sitegen.py).
+    try:
+        from applypilot.apply import sitegen
+        sitegen.record_and_maybe_generate(job, model=model)
+    except Exception:
+        logger.debug("sitegen tracking failed (non-fatal)", exc_info=True)
+
     # Read tailored resume text
     resume_path = job.get("tailored_resume_path")
     txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
@@ -613,6 +676,12 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 applied += 1
                 update_state(worker_id, jobs_applied=applied,
                              jobs_done=applied + failed)
+                if not dry_run:
+                    try:
+                        from applypilot import tracker
+                        tracker.export()
+                    except Exception:
+                        logger.exception("Tracker export failed (non-fatal)")
             else:
                 reason = result.split(":", 1)[-1] if ":" in result else result
                 mark_result(job["url"], "failed", reason,
