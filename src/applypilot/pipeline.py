@@ -60,8 +60,8 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 def _run_discover(workers: int = 1) -> dict:
-    """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
-    stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    """Stage: Job discovery — JobSpy, Workday, smart-extract, and community lists."""
+    stats: dict = {"jobspy": None, "workday": None, "smartextract": None, "community_lists": None}
 
     # JobSpy
     console.print("  [cyan]JobSpy full crawl...[/cyan]")
@@ -95,6 +95,22 @@ def _run_discover(workers: int = 1) -> dict:
         log.error("Smart extract failed: %s", e)
         console.print(f"  [red]Smart extract error:[/red] {e}")
         stats["smartextract"] = f"error: {e}"
+
+    # Community-maintained lists (SimplifyJobs, speedyapply, ...)
+    console.print("  [cyan]Community job lists...[/cyan]")
+    try:
+        from applypilot.discovery.community_lists import run_community_lists_discovery
+        result = run_community_lists_discovery()
+        for name, r in result.items():
+            if "error" in r:
+                console.print(f"    [red]{name}:[/red] {r['error']}")
+            else:
+                console.print(f"    {name}: {r['found']} found, {r['new']} new")
+        stats["community_lists"] = "ok"
+    except Exception as e:
+        log.error("Community list discovery failed: %s", e)
+        console.print(f"  [red]Community lists error:[/red] {e}")
+        stats["community_lists"] = f"error: {e}"
 
     return stats
 

@@ -14,6 +14,7 @@ PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
+BLOCKLIST_PATH = APP_DIR / "blocklist.yaml"
 ENV_PATH = APP_DIR / ".env"
 
 # Generated output
@@ -157,6 +158,60 @@ def load_base_urls() -> dict[str, str | None]:
     return cfg.get("base_urls", {})
 
 
+def load_blocklist() -> list[str]:
+    """Load the user's own employer blocklist from ~/.applypilot/blocklist.yaml.
+
+    Unlike sites.yaml (shipped with the package, "too problematic to
+    automate"), this is a personal file the user edits directly -- companies
+    they never want to work for, regardless of fit score. Missing file (or
+    missing `companies` key) just means an empty blocklist, not an error.
+    """
+    if not BLOCKLIST_PATH.exists():
+        return []
+    import yaml
+    data = yaml.safe_load(BLOCKLIST_PATH.read_text(encoding="utf-8")) or {}
+    return [c for c in data.get("companies", []) if c and c.strip()]
+
+
+def is_blocked_company(site: str | None = None, title: str | None = None,
+                       url: str | None = None) -> str | None:
+    """Case-insensitive substring match against the user's blocklist.
+
+    Checks the company/site name, job title, and URL (a company sometimes
+    only shows up in one of the three, depending on the discovery source).
+    Returns the matched blocklist term, or None if nothing matched.
+    """
+    terms = load_blocklist()
+    if not terms:
+        return None
+
+    haystack = " ".join(x for x in (site, title, url) if x).lower()
+    for term in terms:
+        if term.strip().lower() in haystack:
+            return term
+    return None
+
+
+def is_excluded_title(title: str | None) -> str | None:
+    """Case-insensitive substring match against searches.yaml's exclude_titles.
+
+    Applied at discovery time (before a job is even stored), so an excluded
+    title never reaches scoring/tailoring/apply at all. Returns the matched
+    term, or None if nothing matched.
+    """
+    if not title:
+        return None
+    terms = load_search_config().get("exclude_titles", [])
+    if not terms:
+        return None
+
+    low = title.lower()
+    for term in terms:
+        if term.strip().lower() in low:
+            return term
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Default values — referenced across modules instead of magic numbers
 # ---------------------------------------------------------------------------
@@ -172,12 +227,24 @@ DEFAULTS = {
 
 
 def load_env():
-    """Load environment variables from ~/.applypilot/.env if it exists."""
-    from dotenv import load_dotenv
+    """Load environment variables from ~/.applypilot/.env, falling back to
+    a .env in the current directory for anything not set there.
+
+    A key present but blank (e.g. an unfilled `GEMINI_API_KEY=` placeholder)
+    doesn't count as "set" -- it's skipped so the CWD fallback (or a real
+    shell env var) can still supply it. `load_dotenv`'s default behavior
+    treats a blank value as set, which would otherwise silently shadow a
+    real value from a lower-precedence source.
+    """
+    from dotenv import dotenv_values
+
+    values: dict[str, str] = {}
+    values.update({k: v for k, v in dotenv_values().items() if v})  # CWD (lowest precedence)
     if ENV_PATH.exists():
-        load_dotenv(ENV_PATH)
-    # Also try CWD .env as fallback
-    load_dotenv()
+        values.update({k: v for k, v in dotenv_values(ENV_PATH).items() if v})  # ~/.applypilot/.env wins ties
+
+    for key, value in values.items():
+        os.environ.setdefault(key, value)  # never override a real shell env var
 
 
 # ---------------------------------------------------------------------------

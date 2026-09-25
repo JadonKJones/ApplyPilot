@@ -16,11 +16,14 @@ No fuzzy/semantic matching here on purpose -- aliases are explicit and
 user-controlled, not guessed.
 """
 
+import logging
 import re
 import sqlite3
 from datetime import datetime, timezone
 
 from applypilot.database import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 def normalize(text: str) -> str:
@@ -147,23 +150,33 @@ def list_aliases() -> list[dict]:
 
 
 def resolve_or_ask(question: str, timeout: int = 600) -> str | None:
-    """Resolve a question from cache/alias, or ask via Discord and cache it.
+    """Resolve a question from cache/alias, or ask a human and cache it.
 
-    Returns None if there's no cached answer AND Discord isn't configured
-    (or the human doesn't reply within `timeout` seconds) -- callers should
-    treat that as "couldn't handle this natively" and fall back to Claude.
+    Tries Discord first (if configured), then falls back to a local HTTP
+    prompt (see local_prompt.py) -- which needs no setup at all, so this
+    still works even if Discord isn't configured or its token is broken.
+
+    Returns None only if nothing answered it (nobody replied within
+    `timeout`, or the local port couldn't bind) -- callers should treat
+    that as "couldn't handle this natively" and fall back to Claude.
     """
     cached = get_answer(question)
     if cached is not None:
         return cached
 
     from applypilot import discord_bot
-    if not discord_bot.is_configured():
-        return None
+    if discord_bot.is_configured():
+        answer = discord_bot.ask(question, timeout=timeout)
+        if answer is not None:
+            save_answer(question, answer, source="discord")
+            return answer
+        logger.warning("Discord didn't return an answer for '%s...', trying local prompt",
+                       question[:50])
 
-    answer = discord_bot.ask(question, timeout=timeout)
+    from applypilot import local_prompt
+    answer = local_prompt.ask(question, timeout=timeout)
     if answer is None:
         return None
 
-    save_answer(question, answer, source="discord")
+    save_answer(question, answer, source="local")
     return answer

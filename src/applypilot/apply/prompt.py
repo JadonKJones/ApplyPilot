@@ -96,12 +96,20 @@ def _build_location_check(profile: dict, search_config: dict) -> str:
     """Build the location eligibility check section of the prompt.
 
     Uses the accept_patterns from search config to determine which cities
-    are acceptable for hybrid/onsite roles.
+    are acceptable for hybrid/onsite roles -- unless open_to_relocation is
+    set, in which case every location is acceptable and this check is a
+    formality that never rejects.
     """
     personal = profile["personal"]
     location_cfg = search_config.get("location", {})
+    open_to_relocation = bool(location_cfg.get("open_to_relocation"))
     accept_patterns = location_cfg.get("accept_patterns", [])
     primary_city = personal.get("city", location_cfg.get("primary", "your city"))
+
+    if open_to_relocation:
+        return """== LOCATION CHECK (do this FIRST before any form) ==
+The candidate is open to relocating anywhere. Remote, hybrid, and onsite roles are ALL ELIGIBLE
+regardless of city or country -- do not reject any job based on location. Continue applying."""
 
     # Build the list of acceptable cities for hybrid/onsite
     if accept_patterns:

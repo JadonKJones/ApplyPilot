@@ -147,7 +147,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             return None
 
         # Skip manual ATS sites (unsolvable CAPTCHAs)
-        from applypilot.config import is_manual_ats
+        from applypilot.config import is_manual_ats, is_blocked_company
         apply_url = row["application_url"] or row["url"]
         if is_manual_ats(apply_url):
             conn.execute(
@@ -156,6 +156,19 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
             )
             conn.commit()
             logger.info("Skipping manual ATS: %s", row["url"][:80])
+            return None
+
+        # Safety net for the blocklist -- normally scorer.py never lets a
+        # blocked company earn a real fit_score, but this also catches a
+        # job scored before you added it to blocklist.yaml.
+        match = is_blocked_company(row["site"], row["title"], apply_url)
+        if match:
+            conn.execute(
+                "UPDATE jobs SET apply_status = 'blocked', apply_error = ? WHERE url = ?",
+                (f"blocklist: {match}", row["url"]),
+            )
+            conn.commit()
+            logger.info("Skipping blocked company ('%s'): %s", match, row["url"][:80])
             return None
 
         now = datetime.now(timezone.utc).isoformat()

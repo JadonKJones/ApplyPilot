@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile
+from applypilot.config import RESUME_PATH, load_profile, is_blocked_company
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 
@@ -135,21 +135,29 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     t0 = time.time()
     completed = 0
     errors = 0
+    blocked = 0
     results: list[dict] = []
 
     for job in jobs:
-        result = score_job(resume_text, job)
+        match = is_blocked_company(job.get("site"), job.get("title"),
+                                   job.get("application_url") or job.get("url"))
+        if match:
+            result = {"score": 0, "keywords": "",
+                      "reasoning": f"Blocked by your blocklist ('{match}') -- never scored."}
+            blocked += 1
+        else:
+            result = score_job(resume_text, job)
+            if result["score"] == 0:
+                errors += 1
+
         result["url"] = job["url"]
         completed += 1
-
-        if result["score"] == 0:
-            errors += 1
-
         results.append(result)
 
         log.info(
-            "[%d/%d] score=%d  %s",
+            "[%d/%d] score=%d  %s%s",
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
+            " (blocked)" if match else "",
         )
 
     # Write scores to DB
@@ -162,7 +170,8 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     conn.commit()
 
     elapsed = time.time() - t0
-    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
+    log.info("Done: %d scored in %.1fs (%.1f jobs/sec, %d blocked)",
+             len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0, blocked)
 
     # Score distribution
     dist = conn.execute("""
@@ -175,6 +184,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     return {
         "scored": len(results),
         "errors": errors,
+        "blocked": blocked,
         "elapsed": elapsed,
         "distribution": distribution,
     }

@@ -51,7 +51,13 @@ def _load_location_filter(search_cfg: dict | None = None):
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
-    """Check if a job location passes the user's location filter."""
+    """Check if a job location passes the user's location filter.
+
+    No accept list configured means no restriction -- otherwise every
+    non-remote job gets silently dropped for anyone who hasn't explicitly
+    set location_accept (the common case). Only reject-list matches (or a
+    non-empty accept list that nothing matched) actually filter a job out.
+    """
     if not location:
         return True
 
@@ -63,6 +69,9 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     for r in reject:
         if r.lower() in loc:
             return False
+
+    if not accept:
+        return True
 
     for a in accept:
         if a.lower() in loc:
@@ -313,6 +322,9 @@ def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -
             if emp and job.get("external_path"):
                 url = f"{emp['base_url']}/{emp['site_id']}{job['external_path']}"
         if not url:
+            continue
+
+        if config.is_excluded_title(job.get("title")):
             continue
 
         description = job.get("full_description", "")

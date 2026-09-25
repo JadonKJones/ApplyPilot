@@ -58,7 +58,12 @@ def _load_location_filter(search_cfg: dict | None = None):
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
-    """Check if a job location passes the user's location filter."""
+    """Check if a job location passes the user's location filter.
+
+    No accept list configured means no restriction (otherwise every
+    non-remote job gets silently dropped for anyone who hasn't set
+    location_accept -- the common case).
+    """
     if not location:
         return True
     loc = location.lower()
@@ -67,6 +72,8 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     for r in reject:
         if r.lower() in loc:
             return False
+    if not accept:
+        return True
     for a in accept:
         if a.lower() in loc:
             return True
@@ -102,6 +109,8 @@ def _store_jobs_filtered(
     for job in jobs:
         url = job.get("url")
         if not url:
+            continue
+        if config.is_excluded_title(job.get("title")):
             continue
         if not _location_ok(job.get("location"), accept_locs, reject_locs):
             filtered += 1

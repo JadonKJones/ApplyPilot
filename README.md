@@ -178,8 +178,13 @@ applypilot sites regenerate DOMAIN   # force (re)generation right now, e.g. afte
 Native handlers don't call Claude to improvise answers to screening/EEO/custom questions — they resolve them through a cached-answer system instead:
 
 1. Check the answer cache (exact match, or an alias you've defined).
-2. If it's genuinely new, and a Discord bot is configured, DM you the question and wait for your reply.
-3. Cache the answer so the same (or an aliased) question is never asked twice.
+2. If it's genuinely new: DM you the question over Discord, if that's configured and working.
+3. If Discord isn't configured (or fails — broken token, etc.) it falls through automatically to a **local HTTP prompt**: no setup, no account, nothing to configure. It prints (and logs to the apply dashboard) a URL and a `curl` command, then blocks until you answer from a browser tab or a terminal on the same machine:
+   ```bash
+   curl 'http://localhost:8765/?answer=YOUR+ANSWER'
+   ```
+   Binds to `localhost` only by default; override the port with `SCREENING_PROMPT_PORT` in `.env` if 8765 is taken.
+4. Cache the answer so the same (or an aliased) question is never asked twice.
 
 ```bash
 applypilot questions list                          # cached answers + aliases

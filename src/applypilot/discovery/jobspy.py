@@ -89,8 +89,10 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
-    Remote jobs are always accepted. Non-remote jobs must match an accept
-    pattern and not match a reject pattern.
+    Remote jobs are always accepted. An empty accept list means no
+    restriction (the common case -- otherwise every non-remote job gets
+    silently dropped for anyone who hasn't set location_accept). Reject
+    patterns always apply regardless.
     """
     if not location:
         return True  # unknown location -- keep it, let scorer decide
@@ -106,12 +108,16 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
         if r.lower() in loc:
             return False
 
+    # No accept list configured -- don't restrict by location
+    if not accept:
+        return True
+
     # Accept matches
     for a in accept:
         if a.lower() in loc:
             return True
 
-    # No match -- reject unknown
+    # Had an accept list but nothing matched
     return False
 
 
@@ -129,6 +135,9 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             continue
 
         title = str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None
+        if config.is_excluded_title(title):
+            continue
+
         company = str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None
         location_str = str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None
 
@@ -209,10 +218,16 @@ def _run_one_search(
 
     all_dfs = []
 
-    # Run non-Glassdoor sites with original location
-    if other_sites:
+    # Run non-Glassdoor sites one at a time -- jobspy batches a multi-site
+    # call into one combined result, so one bad job's data (e.g. a LinkedIn
+    # posting with a location string jobspy's own parser can't handle --
+    # this really happens: a job located in Iceland once took down an
+    # entire Indeed+LinkedIn+ZipRecruiter batch over one unparseable
+    # country name) would otherwise silently lose every other board's
+    # results too. Per-site calls cost more requests but isolate failures.
+    for site in other_sites:
         kwargs = {
-            "site_name": other_sites,
+            "site_name": [site],
             "search_term": s["query"],
             "location": s["location"],
             "results_wanted": results_per_site,
@@ -225,13 +240,13 @@ def _run_one_search(
             kwargs["is_remote"] = True
         if proxy_config:
             kwargs["proxies"] = [proxy_config["jobspy"]]
-        if "linkedin" in other_sites:
+        if site == "linkedin":
             kwargs["linkedin_fetch_description"] = True
         try:
             df = _scrape_with_retry(kwargs, max_retries=max_retries)
             all_dfs.append(df)
         except Exception as e:
-            log.error("[%s] (non-gd): %s", label, e)
+            log.error("[%s] (%s): %s", label, site, e)
 
     # Run Glassdoor separately with simplified location
     if has_glassdoor:
