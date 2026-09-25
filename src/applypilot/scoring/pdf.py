@@ -170,14 +170,14 @@ def build_html(resume: dict) -> str:
 
     # Experience
     exp_html = ""
-    if "EXPERIENCE" in sections:
-        entries = parse_entries(sections["EXPERIENCE"])
+    if "PROFESSIONAL EXPERIENCE" in sections:
+        entries = parse_entries(sections["PROFESSIONAL EXPERIENCE"])
         items = ""
         for e in entries:
             bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
             subtitle = f'<div class="entry-subtitle">{e["subtitle"]}</div>' if e["subtitle"] else ""
             items += f'<div class="entry"><div class="entry-title">{e["title"]}</div>{subtitle}<ul>{bullets}</ul></div>'
-        exp_html = f'<div class="section"><div class="section-title">Experience</div>{items}</div>'
+        exp_html = f'<div class="section"><div class="section-title">Professional Experience</div>{items}</div>'
 
     # Projects
     proj_html = ""
@@ -193,8 +193,14 @@ def build_html(resume: dict) -> str:
     # Education
     edu_html = ""
     if "EDUCATION" in sections:
-        edu_text = sections["EDUCATION"].strip()
+        edu_text = sections["EDUCATION"].strip().replace("\n", "<br>")
         edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+
+    # Awards
+    awards_html = ""
+    if "AWARDS & INVOLVEMENTS" in sections:
+        awards_text = sections["AWARDS & INVOLVEMENTS"].strip().replace("\n", "<br>")
+        awards_html = f'<div class="section"><div class="section-title">Awards & Involvements</div><div class="edu">{awards_text}</div></div>'
 
     # Summary
     summary_html = ""
@@ -323,10 +329,11 @@ li {{
     <div class="contact">{contact_html}</div>
 </div>
 {summary_html}
-{skills_html}
+{edu_html}
 {exp_html}
 {proj_html}
-{edu_html}
+{skills_html}
+{awards_html}
 </body>
 </html>"""
 

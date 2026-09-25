@@ -67,13 +67,15 @@ def _build_cover_letter_prompt(profile: dict) -> str:
 
     return f"""Write a cover letter for {sign_off_name}. The goal is to get an interview.
 
-STRUCTURE: 3 short paragraphs. Under 250 words. Every sentence must earn its place.
+STRUCTURE: 4 paragraphs. 300-400 words. Professional and substantive -- like a real formal job application letter.
 
-PARAGRAPH 1 (2-3 sentences): Open with a specific thing YOU built that solves THEIR problem. Not "I'm excited about this role." Not "This role aligns with my experience." Start with the work.
+PARAGRAPH 1 (2-3 sentences): Express enthusiastic interest in the specific role at the company. Mention that you are a Computer Science student at Michigan State University with a 4.0 GPA. State why you are a strong fit based on your background.
 
-PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use numbers. Frame as solving their problem, not listing your accomplishments.{projects_hint}{metrics_hint}
+PARAGRAPH 2 (3-4 sentences): Describe your Undergraduate Research Assistant experience at MSU College of Engineering in depth. Talk about designing and deploying AI/ML models, CNN optimization, Python/TensorFlow/PyTorch, and real-time data processing. Be specific and technical. Use numbers where possible.{projects_hint}{metrics_hint}
 
-PARAGRAPH 3 (1-2 sentences): One specific thing about the company from the job description (a product, a technical challenge, a team structure). Then close. "Happy to walk through any of this in more detail." or "Let's discuss." Nothing else.
+PARAGRAPH 3 (3-4 sentences): Describe your most relevant other experience or project for this specific job. Pull from PikinAI (full-stack AI educational platform, Gemini API integration, Flask, child-safe AI chatbot, 99.9% platform availability) or another relevant project from the resume. Tie it directly to what the company does or needs.
+
+PARAGRAPH 4 (3-4 sentences): Reference something specific about the company from the job description -- their mission, a product, or a technical challenge they face. Explain why it resonates with your professional goals. Close with: "Thank you for your time and consideration. I look forward to the possibility of discussing how my background aligns with your needs."
 
 BANNED WORDS AND PHRASES (automated validator rejects ANY of these — do not use even once):
 {all_banned}
@@ -84,17 +86,16 @@ ALSO BANNED (meta-commentary the validator catches):
 BANNED PUNCTUATION: No em dashes (—) or en dashes (–). Use commas or periods.
 
 VOICE:
-- Write like a real engineer emailing someone they respect. Not formal, not casual. Just direct.
-- NEVER narrate or explain what you're doing. BAD: "This demonstrates my commitment to X." GOOD: Just state the fact and move on.
-- NEVER hedge. BAD: "might address some of your challenges." GOOD: "solves the same problem your team is facing."
-- Every sentence should contain either a number, a tool name, or a specific outcome. If it doesn't, cut it.
-- Read it out loud. If it sounds like a robot wrote it, rewrite it.
+- Professional and formal, like a polished engineer writing a real job application. Not casual, not stiff.
+- Be specific: mention real tools, real outcomes, real numbers.
+- No vague filler. Every sentence must add concrete value.
+- Do NOT say "I am writing to apply for" -- express direct enthusiasm instead.
 
 FABRICATION = INSTANT REJECTION:
 The candidate's real tools are ONLY: {skills_str}.
-Do NOT mention ANY tool not in this list. If the job asks for tools not listed, talk about the work you did, not the tools.
+Do NOT mention ANY tool not in this list.
 
-Sign off: just "{sign_off_name}"
+Sign off with "Sincerely," on its own line, then "{sign_off_name}" on the next line.
 
 Output ONLY the letter text. No subject lines. No "Here is the cover letter:" preamble. No notes after the sign-off.
 Start DIRECTLY with "Dear Hiring Manager," and end with the name."""
