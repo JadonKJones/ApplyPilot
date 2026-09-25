@@ -165,13 +165,12 @@ def resolve_or_ask(question: str, timeout: int = 600) -> str | None:
         return cached
 
     from applypilot import discord_bot
+    from applypilot import discord_commands
     if discord_bot.is_configured():
-        answer = discord_bot.ask(question, timeout=timeout)
-        if answer is not None:
-            save_answer(question, answer, source="discord")
-            return answer
-        logger.warning("Discord didn't return an answer for '%s...', trying local prompt",
-                       question[:50])
+        # Do not block. Send the notification and skip this application
+        discord_commands.pending_question = question
+        discord_bot.notify(f"**Screening question:**\n{question}\n\n_Reply with `!answer <your response>` to save it for future attempts. (This application was skipped and will retry later)._")
+        raise Exception(f"needs_answer:{question[:50]}")
 
     from applypilot import local_prompt
     answer = local_prompt.ask(question, timeout=timeout)

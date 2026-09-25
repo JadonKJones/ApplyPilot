@@ -180,6 +180,8 @@ def apply(
 
     from applypilot.config import check_tier, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
+    from applypilot.discord_commands import start_listener
+    start_listener()
 
     # --- Utility modes (no Chrome/Claude needed) ---
 
@@ -214,8 +216,8 @@ def apply(
         )
         raise typer.Exit(code=1)
 
-    # Check 3: Tailored resumes exist (skip for --gen with --url)
-    if not (gen and url):
+    # Check 3: Tailored resumes exist (skip for --gen with --url or --continuous)
+    if not (gen and url) and not continuous:
         conn = get_connection()
         ready = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL"
